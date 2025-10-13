@@ -1,10 +1,12 @@
 
 # ================CONFIGURATION GUROBI================#
+# Déclare le chemin local vers Gurobi et sa licence.
 ENV["GUROBI_HOME"] = "/Library/gurobi1203/macos_universal2/"
 ENV["GRB_LICENSE_FILE"] = "/Users/p.gatt/Documents/3A/Optimisation_discrete/gurobi.lic"
 
 
 #================IMPORTATION DES PACKAGES================#
+# Installe les dépendances si besoin (ne fait rien si elles sont déjà présentes).
 import Pkg
 Pkg.add(["JuMP", "Gurobi", "MathOptInterface"])
 Pkg.add(["Graphs", "GraphRecipes", "Plots", "Colors", "PrettyTables"])
@@ -19,23 +21,28 @@ using Gurobi
 const INF = 1.0e12
 
 # ================PARAMETRES================#
-const time_limit = 10 # en secondes
+# Paramètres généraux utilisés par tous les modèles.
+const time_limit = 120 # en secondes
 const gap_limit = 0.0001
 const max_rounds = 50
 const tol = 1e-6 # tol pour les coupes
 #================FONCTION LECTURE DATA ================#
 function readWeightedGraph_paper(file::String)
     open(file, "r") do io
+        # Lit toutes les lignes en mémoire (instances de petite taille).
         data = readlines(io)
+        # Récupère le nombre de sommets et d'arêtes.
         line = split(strip(data[2]))
         n = parse(Int, line[1])
         m = parse(Int, line[2])
         E = zeros(Int, n, n)
         W = zeros(Int, n)
+        # Charge les poids des sommets.
         for i in 1:n
             line = split(strip(data[3 + i]))
             W[i] = parse(Int, line[4])
         end
+        # Marque les arêtes orientées dans la matrice d'adjacence.
         for i in 1:m
             line = split(strip(data[4 + n + i]))
             orig = parse(Int, line[1]) + 1
@@ -53,24 +60,29 @@ end
 function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     n  = length(W)
     wG = sum(W)
+    # On modélise k sources fictives pour alimenter les classes.
     sources = collect(n+1:n+k)
     arcs = Tuple{Int,Int}[]
+    # Liste tous les arcs possibles entre sommets adjacents.
     for u in 1:n, v in 1:n
         if u != v && (E[u,v] == 1 || E[v,u] == 1)
             push!(arcs, (u, v))
         end
     end
+    # Connecte chaque source à tous les sommets réels.
     for si in sources, v in 1:n
         push!(arcs, (si, v))
     end
     A = length(arcs)
     arcs_out = [Int[] for _ in 1:(n+k)]
     arcs_in  = [Int[] for _ in 1:(n+k)]
+    # Prépare les listes d'incidence pour accélérer les contraintes.
     for a in 1:A
         (u,v) = arcs[a]
         push!(arcs_out[u], a)
         push!(arcs_in[v], a)
     end
+    # Modèle de flot avec capacités binaires activées par y.
     model = Model(() -> Gurobi.Optimizer())
     set_optimizer_attribute(model, "OutputFlag", 0)  # 1 pour voir le log
     set_optimizer_attribute(model, "TimeLimit", time_limit)
@@ -84,9 +96,11 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
         @constraint(model, sum(f[a] for a in arcs_out[si]) <= sum(f[a] for a in arcs_out[sip1]))
     end
     for v in 1:n
+        # Conservation du flot aux sommets réels avec demande W[v].
         @constraint(model, sum(f[a] for a in arcs_in[v]) - sum(f[a] for a in arcs_out[v]) == W[v])
     end
     for a in 1:A
+        # Cette contrainte ne laisse circuler du flot que si l'arc est sélectionné.
         @constraint(model, f[a] <= wG * y[a])
     end
     for si in sources
@@ -99,6 +113,7 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     obj  = objective_value(model)
     yval = value.(y)
     parent = fill(0, n)
+    # Reconstruit l'arbre d'affectation à partir des arcs actifs.
     for v in 1:n
         for a in arcs_in[v]
             if yval[a] > 0.5
@@ -118,6 +133,7 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     classes = [Int[] for _ in 1:k]
     for i in 1:k
         si = sources[i]
+        # Parcours en profondeur pour regrouper les sommets atteints.
         stack = copy(children[si])
         while !isempty(stack)
             v = pop!(stack)
@@ -134,60 +150,93 @@ end
 function mincut_two_layer(nb_nodes::Int,
                           origins::Vector{Int}, dests::Vector{Int}, caps::Vector{Float64},
                           s::Int, t::Int)
-    adj = [Int[] for _ in 1:nb_nodes]
-    to  = Int[]; rev = Int[]; cap = Float64[]
+    # Initialise la liste d'adjacence et les propriétés des arêtes
+    adj = [Int[] for _ in 1:nb_nodes]  # Liste d'adjacence pour chaque nœud
+    to  = Int[]  # Nœuds cibles pour les arêtes
+    rev = Int[]  # Indices des arêtes inverses
+    cap = Float64[]  # Capacités des arêtes
+
+    # Fonction pour ajouter une arête au graphe
     function add_edge(u, v, c)
-        push!(to, v); push!(rev, length(to)+1); push!(cap, c); push!(adj[u], length(to))
-        push!(to, u); push!(rev, length(to)-1); push!(cap, 0.0); push!(adj[v], length(to))
+        # Ajoute une arête directe
+        push!(to, v)
+        push!(rev, length(to) + 1)
+        push!(cap, c)
+        push!(adj[u], length(to))
+        # Ajoute une arête inverse avec une capacité nulle
+        push!(to, u)
+        push!(rev, length(to) - 1)
+        push!(cap, 0.0)
+        push!(adj[v], length(to))
     end
+
+    # Ajoute toutes les arêtes au graphe
     for e in eachindex(origins)
         add_edge(origins[e], dests[e], caps[e])
     end
-    level  = fill(-1, nb_nodes)
-    itcur  = fill(1, nb_nodes)
+
+    # Initialise le tableau des niveaux pour le BFS et l'itérateur pour le DFS
+    level  = fill(-1, nb_nodes)  # Niveaux des nœuds dans le graphe résiduel
+    itcur  = fill(1, nb_nodes)  # Itérateur courant pour chaque nœud
+
+    # Recherche en largeur (BFS) pour calculer les niveaux des nœuds
     function bfs!()
-        fill!(level, -1); level[s] = 0
-        q = Int[s]; head = 1
+        fill!(level, -1)  # Réinitialise les niveaux
+        level[s] = 0  # Commence à partir du nœud source
+        q = Int[s]  # File pour le BFS
+        head = 1
         while head <= length(q)
-            v = q[head]; head += 1
+            v = q[head]
+            head += 1
             for idx in adj[v]
                 u = to[idx]
+                # Vérifie si l'arête a une capacité et si le nœud n'a pas été visité
                 if cap[idx] > 1e-12 && level[u] < 0
                     level[u] = level[v] + 1
                     push!(q, u)
                 end
             end
         end
-        return level[t] >= 0
+        return level[t] >= 0  # Retourne vrai si le puits est atteignable
     end
+
+    # Recherche en profondeur (DFS) pour trouver des chemins augmentants
     function dfs!(v, fmax)
-        v == t && return fmax
+        v == t && return fmax  # Si le puits est atteint, retourne le flot
         for k in itcur[v]:length(adj[v])
             itcur[v] = k
             idx = adj[v][k]
             u = to[idx]
+            # Vérifie si l'arête peut être utilisée dans un chemin augmentant
             if cap[idx] > 1e-12 && level[v] < level[u]
-                δ = dfs!(u, min(fmax, cap[idx]))
+                δ = dfs!(u, min(fmax, cap[idx]))  # Appel récursif avec flot mis à jour
                 if δ > 1e-12
-                    cap[idx] -= δ
+                    cap[idx] -= δ  # Met à jour la capacité résiduelle
                     cap[rev[idx]] += δ
                     return δ
                 end
             end
         end
-        return 0.0
+        return 0.0  # Aucun flot supplémentaire trouvé
     end
+
+    # Algorithme de flot maximum
     flow = 0.0
-    while bfs!()
-        fill!(itcur, 1)
+    while bfs!()  # Tant qu'il existe un chemin augmentant
+        fill!(itcur, 1)  # Réinitialise les itérateurs
         while true
-            pushed = dfs!(s, INF)
-            pushed <= 1e-12 && break
-            flow += pushed
+            δ = dfs!(s, INF)  # Trouve un flot augmentant
+            if δ < 1e-12
+                break  # Arrête si aucun flot supplémentaire n'est trouvé
+            end
+            flow += δ  # Ajoute le flot trouvé au flot total
         end
     end
+
+    # Identifie les nœuds du côté source après le calcul du flot maximum
     seen = falses(nb_nodes)
-    stack = [s]; seen[s] = true
+    stack = [s]
+    seen[s] = true
     while !isempty(stack)
         v = pop!(stack)
         for idx in adj[v]
@@ -198,7 +247,7 @@ function mincut_two_layer(nb_nodes::Int,
             end
         end
     end
-    side = findall(identity, seen)
+    side = findall(identity, seen)  # Nœuds atteignables depuis la source
     return flow, side
 end
 
@@ -207,6 +256,7 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
     start_time = time()
 
     non_edges = Tuple{Int,Int}[]
+    # Construit la liste des couples qui ne sont pas reliés par une arête.
     for u in 1:n, v in u+1:n
         if E[u,v] == 0 && E[v,u] == 0
             push!(non_edges, (u,v))
@@ -220,9 +270,11 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
 
     @variable(model, x[1:n, 1:k], Bin)
 
+    # Les classes sont ordonnées par poids total croissant.
     @constraint(model, [i in 1:k-1],
         sum(W[v]*x[v,i] for v in 1:n) <= sum(W[v]*x[v,i+1] for v in 1:n)
     )
+    # Un sommet appartient à au plus une classe.
     @constraint(model, [v in 1:n], sum(x[v,i] for i in 1:k) <= 1)
 
     @objective(model, Max, sum(W[v]*x[v,1] for v in 1:n))
@@ -247,6 +299,7 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
             end
             
             for v in 1:n
+                # Capacité proportionnelle à la solution fractionnaire.
                 add_arc(v, v + n, float(x_sol[v,i]))
             end
 
@@ -267,6 +320,7 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
                                 push!(S, z)
                             end
                         end
+                        # Ajoute une coupe pour interdire le sous-ensemble détecté.
                         @constraint(model, x[u,i] + x[v,i] - sum(x[z,i] for z in S) <= 1.0)
                         cuts_added += 1
                     end
@@ -298,6 +352,7 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
     obj  = objective_value(model)
     xval = value.(x)
 
+    # Reconstruit les classes finales à partir de la solution entière.
     classes = [Int[] for _ in 1:k]
     for i in 1:k
         for v in 1:n
@@ -344,6 +399,7 @@ const FNAME = "/Users/p.gatt/Documents/3A/Optimisation_discrete/bcpk_grids_small
 
 
 # =================LANCEMENT DES TESTS ===============#
+# Lit l'instance de test puis lance les deux formulations.
 E, W = readWeightedGraph_paper(FNAME)
 k = 4
 println("=== Méthode 1 : FLOW (Q1) ===")
