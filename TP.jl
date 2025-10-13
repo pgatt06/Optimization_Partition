@@ -77,7 +77,9 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     end
 
     model = Model(() -> Gurobi.Optimizer())
-    set_optimizer_attribute(model, "OutputFlag", 0)
+    set_optimizer_attribute(model, "OutputFlag", 1)
+    set_optimizer_attribute(model, "TimeLimit", 120.0)  # 120 s
+    set_optimizer_attribute(model, "MIPGap", 0.0001)      # gap relatif 1%
 
     @variable(model, f[1:A] >= 0.0)
     @variable(model, y[1:A], Bin)
@@ -231,7 +233,7 @@ function mincut_two_layer(nb_nodes::Int,
     return flow, side
 end
 
-############# 2) COUPES – boucle externe (zéro callback) #############
+############# 2) COUPES – séparation #############
 function solve_bcpk_coupes_no_callback(E::Array{Int,2}, W::Vector{Int}, k::Int;
                                        tol::Float64 = 1e-6, max_rounds::Int = 50)
     n = length(W)
@@ -326,7 +328,6 @@ function solve_bcpk_coupes_no_callback(E::Array{Int,2}, W::Vector{Int}, k::Int;
 
         x_sol = value.(x)
         added = add_violated_cuts!(x_sol)
-        # println("Round $round — coupes ajoutées: $added")
         added == 0 && break
     end
 
@@ -346,7 +347,7 @@ function solve_bcpk_coupes_no_callback(E::Array{Int,2}, W::Vector{Int}, k::Int;
 end
 
 ############# Démo minimale #############
-const FNAME = "instance_bcpk.txt"
+#const FNAME = "instance_bcpk.txt"
 instance_text = """
 nnodes nedges type
 8 10 graph
@@ -371,10 +372,11 @@ endpoint1 endpoint2
 5 7
 6 7
 """
-open(FNAME, "w") do io
-    write(io, instance_text)
-end
+#open(FNAME, "w") do io
+#    write(io, instance_text)
+#end
 
+const FNAME = "/Users/p.gatt/Documents/3A/Optimisation_discrete/bcpk_grids_small/gg_05_05/a/gg_05_05_a_2.in"
 E, W = readWeightedGraph_paper(FNAME)
 k = 2
 
@@ -385,7 +387,7 @@ for i in 1:k
     println("Classe $i : ", classesF[i])
 end
 
-println("\n=== Méthode 2 : COUPES (sans callback) ===")
+println("\n=== Méthode 2 : COUPES séparation ===")
 objC, classesC = solve_bcpk_coupes_no_callback(E, W, k; max_rounds=50)
 println("Poids minimal maximisé = ", objC)
 for i in 1:k
