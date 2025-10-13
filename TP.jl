@@ -206,7 +206,6 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
     n = length(W)
     start_time = time()
 
-    # non-arêtes et arêtes non orientées
     non_edges = Tuple{Int,Int}[]
     for u in 1:n, v in u+1:n
         if E[u,v] == 0 && E[v,u] == 0
