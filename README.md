@@ -7,9 +7,11 @@ Le **BCPk (Balanced Connected Partition into k Parts)** est un problème d’opt
 - et que le poids total $W(V_i) = \sum_{v \in V_i} W[v]$ soit **équilibré** entre les classes.
 
 L’objectif est de **maximiser le poids minimal** parmi les $k$ classes :
+
 $$
 \max \ \min_{i=1,\dots,k} W(V_i)
 $$
+
 C’est un problème NP-difficile. Trois formulations mathématiques ont donc été proposées et résolues avec **Gurobi** via **JuMP**, utilisant des techniques de flots, de coupes et de séparation incrémentale de contraintes.
 
 ---
@@ -31,7 +33,7 @@ Cette méthode modélise le problème sous la forme d’un **réseau de flots** 
 - **Contraintes** :
   - Conservation du flux aux sommets réels : entrée – sortie = poids du sommet.
   - Un seul arc sortant par source et un seul « père » par sommet.
-  - Activation des arcs : $f_{uv} \le w(G) \, y_{uv}$.
+  - Activation des arcs : $f_{uv} \le w(G) \cdot y_{uv}$.
   - Ordre non décroissant des flots entre sources.
 
 ### Intérêt
@@ -49,9 +51,11 @@ La deuxième approche repose sur un **modèle compact** avec des variables binai
 - **Variables** : $x[v,i] \in \{0,1\}$.
 - **Objectif** :  
   Maximiser le poids total de la première classe $W(V_1)$, sous contrainte d’équilibre croissant :
+
   $$
   \sum_v W[v] x[v,i] \le \sum_v W[v] x[v,i+1}.
   $$
+
 - **Contrainte d’unicité** : chaque sommet appartient à **au plus une classe**.
 
 ### Séparation de connectivité
@@ -59,11 +63,12 @@ La deuxième approche repose sur un **modèle compact** avec des variables binai
 - Si deux sommets non reliés $(u,v)$ appartiennent à la même classe avec $x[u,i] + x[v,i] > 1$,  
   un **problème de flot maximum / min-cut** est résolu pour détecter une violation de connectivité.
 - Une **contrainte de coupe** est ajoutée pour interdire cette configuration :
+
   $$
   x[u,i] + x[v,i] - \sum_{z \in S} x[z,i] \le 1, \quad \forall S \subseteq V
   $$
-  où $S$ est l’ensemble de sommets séparant $u$ et $v$ dans le graphe.
 
+  où $S$ est l’ensemble de sommets séparant $u$ et $v$ dans le graphe.
 
 ### Intérêt
 Cette approche est plus **scalable** que la formulation à flots, car elle ajoute dynamiquement les contraintes nécessaires à la connectivité.  
