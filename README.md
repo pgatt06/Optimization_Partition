@@ -79,6 +79,7 @@ Cette méthode améliore la précédente sur deux points :
    ($x[u,i] > 0.5$ et $x[v,i] > 0.5$), ce qui réduit considérablement le nombre de coupes inutiles.
 2. **Ajout d’inégalités croisées ("cross inequalities")** :  
    Pour tout **4-cycle sans cordes** $(a,b,c,d)$, on impose :
+
    $$
    x[a,i_1] + x[c,i_1] + x[b,i_2] + x[d,i_2] \le 3, \quad \forall i_1 \ne i_2
    $$
