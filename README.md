@@ -53,7 +53,13 @@ La deuxième approche repose sur un **modèle compact** avec des variables binai
   Maximiser le poids total de la première classe $W(V_1)$, sous contrainte d’équilibre croissant :
 
   $$
-  \sum_v W[v] \cdot x[v,i] \leq \sum_v W[v] \cdot x[v,i+1}.
+  \max \sum_{v \in V} W[v] \cdot x[v,1]
+  $$
+
+  sous la contrainte :
+
+  $$
+  \sum_{v \in V} W[v] \cdot x[v,i] \leq \sum_{v \in V} W[v] \cdot x[v,i+1}, \quad \forall i = 1, \dots, k-1.
   $$
 
 - **Contrainte d’unicité** : chaque sommet appartient à **au plus une classe**.
