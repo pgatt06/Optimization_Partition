@@ -4,7 +4,6 @@ ENV["GUROBI_HOME"] = "/Library/gurobi1203/macos_universal2/"
 ENV["GRB_LICENSE_FILE"] = "/Users/p.gatt/Documents/3A/Optimisation_discrete/gurobi.lic"
 
 #================IMPORTATION DES PACKAGES================#
-# Installe les dépendances si besoin (ne fait rien si elles sont déjà présentes).
 import Pkg
 Pkg.add(["JuMP", "Gurobi", "MathOptInterface"])
 Pkg.add(["Graphs", "GraphRecipes", "Plots", "Colors", "PrettyTables"])
@@ -16,14 +15,16 @@ using Colors
 using PrettyTables
 using JuMP
 using Gurobi
+using MathOptInterface
+const MOI = MathOptInterface
+
 const INF = 1.0e12
 
 # ================PARAMETRES================#
-# Paramètres généraux utilisés par tous les modèles.
-const time_limit = 120.0        # en secondes
-const gap_limit  = 1e-4          # 0.01 %
+const time_limit = 1800.0       # 30 minutes
+const gap_limit  = 1e-4         # 0.01 %
 const max_rounds = 50
-const tol        = 1e-6          # tolérance pour les coupes
+const tol        = 1e-6         # tolérance pour les coupes
 
 #================FONCTION LECTURE DATA ================#
 """
@@ -59,11 +60,62 @@ function readWeightedGraph_paper(file::String)
     end
 end
 
+# ================ OUTILS METRICS & AFFICHAGE ================#
+"""
+collect_metrics(model) -> NamedTuple
+
+Renvoie :
+- obj, bound, time, status, gap, optimal
+"""
+function collect_metrics(model::JuMP.Model)
+    status = termination_status(model)
+
+    obj = try
+        has_values(model) ? objective_value(model) : NaN
+    catch
+        NaN
+    end
+
+    bound = try
+        objective_bound(model)
+    catch
+        NaN
+    end
+
+    tsolve = try
+        solve_time(model)
+    catch
+        NaN
+    end
+
+    gap = if isfinite(obj) && isfinite(bound) && abs(obj) > 0
+        abs(obj - bound) / abs(obj)
+    else
+        NaN
+    end
+
+    return (obj=obj, bound=bound, time=tsolve, status=status, gap=gap, optimal=(status == MOI.OPTIMAL))
+end
+
+function print_solution_with_metrics(title::String, metrics, classes::Vector{Vector{Int}}, W::Vector{Int})
+    println("=== $(title) ===")
+    println("Poids minimal maximisé : ", metrics.obj)
+    println("Borne LP (best bound)  : ", metrics.bound)
+    println("Gap relatif (%)        : ", isfinite(metrics.gap) ? round(100*metrics.gap, digits=2) : NaN)
+    println("Temps total (s)        : ", metrics.time)
+    println("Statut                 : ", metrics.status)
+    println("Optimalité prouvée ?   : ", metrics.optimal ? "Oui" : "Non")
+    for (i,cl) in enumerate(classes)
+        w = sum(W[v] for v in cl)
+        println("  Classe $(i) (poids=$w) : ", cl)
+    end
+end
+
 # ================METHODE 1 : FLOW (Q1)================#
 """
-solve_bcpk_flow(E, W, k) -> (obj, classes)
+solve_bcpk_flow(E, W, k) -> (metrics, classes)
 
-Formulation à flots avec k sources fictives. Renvoie l'objectif et la partition.
+Formulation à flots avec k sources fictives.
 """
 function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     n  = length(W)
@@ -128,11 +180,12 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     end
 
     optimize!(model)
+    metrics = collect_metrics(model)
+
     if !has_values(model)
-        return (NaN, [Int[] for _ in 1:k])
+        return (metrics, [Int[] for _ in 1:k])
     end
 
-    obj  = objective_value(model)
     yval = value.(y)
 
     # reconstruire la forêt et les classes
@@ -161,7 +214,7 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
         end
         sort!(classes[i])
     end
-    return obj, classes
+    return (metrics, classes)
 end
 
 # ================OUTIL : MIN-CUT (Dinic)================#
@@ -255,7 +308,7 @@ end
 """
 enumerate_4cycles(E) -> Vector{Vector{Int}}
 
-Détecte des 4-cycles simples (a-b-c-d-a) sans chordes dans le graphe non orienté.
+Détecte des 4-cycles simples (a-b-c-d-a) sans cordes dans le graphe non orienté.
 """
 function enumerate_4cycles(E::Array{Int,2})
     n = size(E,1)
@@ -292,7 +345,6 @@ end
 # ================CROSS INEQUALITIES================#
 """
 add_cross_inequalities!(model, x, x_sol, four_cycles, k; tol) -> Int
-
 Ajoute les inégalités croisées violées :
 x[a,i1] + x[c,i1] + x[b,i2] + x[d,i2] ≤ 3, i1≠i2
 pour chaque 4-cycle (a-b-c-d).
@@ -317,10 +369,9 @@ end
 
 # ================METHODE 2 : CUTS (Q2, sans boost)================#
 """
-solve_bcpk_coupes_separation(E, W, k) -> (obj, classes)
+solve_bcpk_coupes_separation(E, W, k) -> (metrics, classes)
 
-Formulation cut-based avec séparation de connectivité (sans boost) :
-déclenche si x[u,i] + x[v,i] > 1 + tol.
+Formulation cut-based avec séparation de connectivité (sans boost).
 """
 function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
     n = length(W)
@@ -377,10 +428,11 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
                 # SANS BOOST : condition sur la somme
                 if x_sol[u,i] + x_sol[v,i] > 1.0 + tol
                     s = u; t = v + n
-                    value, side = mincut_two_layer(2n, origins, dests, caps, s, t)
+                    nb = 2*n
+                    value, side = mincut_two_layer(nb, origins, dests, caps, s, t)
                     threshold = x_sol[u,i] + x_sol[v,i] - 1.0
                     if value + 1e-9 < threshold
-                        in_side = falses(2n)
+                        in_side = falses(nb)
                         for z in side; in_side[z] = true; end
                         S = Int[]
                         for z in 1:n
@@ -408,11 +460,12 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
     end
 
     optimize!(model)
+    metrics = collect_metrics(model)
+
     if !has_values(model)
-        return (NaN, [Int[] for _ in 1:k])
+        return (metrics, [Int[] for _ in 1:k])
     end
 
-    obj  = objective_value(model)
     xval = value.(x)
     classes = [Int[] for _ in 1:k]
     for i in 1:k
@@ -421,15 +474,14 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
         end
         sort!(classes[i])
     end
-    return obj, classes
+    return (metrics, classes)
 end
 
 # ================METHODE 3 : CUTS (Q3, avec boost + cross)================#
 """
-solve_bcpk_coupes_separation_boost(E, W, k) -> (obj, classes)
+solve_bcpk_coupes_separation_boost(E, W, k) -> (metrics, classes)
 
-Identique à la méthode 2, mais **avec boost** (x[u,i] > 0.5 et x[v,i] > 0.5)
-et ajout des **cross inequalities** sur 4-cycles.
+Identique à la méthode 2, avec boost (x[u,i], x[v,i] > 0.5) et cross inequalities.
 """
 function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::Int)
     n = length(W)
@@ -480,10 +532,11 @@ function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::
             for (u,v) in non_edges
                 if (x_sol[u,i] > 0.5 + tol) && (x_sol[v,i] > 0.5 + tol)
                     s = u; t = v + n
-                    value, side = mincut_two_layer(2n, origins, dests, caps, s, t)
+                    nb = 2*n
+                    value, side = mincut_two_layer(nb, origins, dests, caps, s, t)
                     threshold = x_sol[u,i] + x_sol[v,i] - 1.0
                     if value + 1e-9 < threshold
-                        in_side = falses(2n)
+                        in_side = falses(nb)
                         for z in side; in_side[z] = true; end
                         S = Int[]
                         for z in 1:n
@@ -515,11 +568,12 @@ function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::
     end
 
     optimize!(model)
+    metrics = collect_metrics(model)
+
     if !has_values(model)
-        return (NaN, [Int[] for _ in 1:k])
+        return (metrics, [Int[] for _ in 1:k])
     end
 
-    obj  = objective_value(model)
     xval = value.(x)
     classes = [Int[] for _ in 1:k]
     for i in 1:k
@@ -528,19 +582,10 @@ function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::
         end
         sort!(classes[i])
     end
-    return obj, classes
+    return (metrics, classes)
 end
 
-# =================== FONCTION AFFICHAGE ==================#
-function print_solution(title::String, obj::Float64, classes::Vector{Vector{Int}}, W::Vector{Int})
-    println(title)
-    println("Poids minimal maximisé = ", obj)
-    for (i,cl) in enumerate(classes)
-        w = sum(W[v] for v in cl)
-        println("  Classe $(i) (poids=$w) : ", cl)
-    end
-end
-
+# =================== FONCTIONS D'AFFICHAGE/TRACE ==================#
 function plot_partition(E, classes; node_colors = [:red, :blue, :green, :orange, :purple])
     n = size(E,1)
     g = SimpleGraph(n)
@@ -555,9 +600,6 @@ function plot_partition(E, classes; node_colors = [:red, :blue, :green, :orange,
     end
     graphplot(g, nodecolor=color, nodesize=0.15, markerstrokewidth=0.5)
 end
-
-
-# ================= PETITS TESTS =================#
 
 function check_connectivity(E, classes)
     n = size(E, 1)
@@ -575,28 +617,24 @@ function check_connectivity(E, classes)
     end
 end
 
-
-# =================LANCEMENT DES TESTS ===============#
-# Lit l'instance de test puis lance les trois formulations.
-# Exemple : adapter le chemin à ton installation
-
+# ================= LANCEMENT DES TESTS =================#
 const FNAME = "/Users/p.gatt/Documents/3A/Optimisation_discrete/random/rnd_n20/m30/a/rnd_20_30_a_1.in"
 E, W = readWeightedGraph_paper(FNAME)
 k = 2
 
 println("=== Méthode 1 : FLOW (Q1) ===")
-objF, classesF = solve_bcpk_flow(E, W, k)
-print_solution("FLOW", objF, classesF, W)
+metricsF, classesF = solve_bcpk_flow(E, W, k)
+print_solution_with_metrics("FLOW (Q1)", metricsF, classesF, W)
 
 println("\n=== Méthode 2 : CUTS + séparation (Q2) ===")
-objC, classesC = solve_bcpk_coupes_separation(E, W, k)
-print_solution("CUTS", objC, classesC, W)
+metricsC, classesC = solve_bcpk_coupes_separation(E, W, k)
+print_solution_with_metrics("CUTS (Q2)", metricsC, classesC, W)
 
 println("\n=== Méthode 3 : CUTS + séparation BOOSTÉE (Q3) ===")
-objCB, classesCB = solve_bcpk_coupes_separation_boost(E, W, k)
-print_solution("CUTS BOOSTÉE", objCB, classesCB, W)
+metricsCB, classesCB = solve_bcpk_coupes_separation_boost(E, W, k)
+print_solution_with_metrics("CUTS BOOSTÉE (Q3)", metricsCB, classesCB, W)
 
-
-# PLOTS ET TESTS 
+# PLOTS ET TESTS
 check_connectivity(E, classesF)
 plot_partition(E, classesF)
+
