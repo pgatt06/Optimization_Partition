@@ -78,12 +78,13 @@ Cette méthode améliore la précédente sur deux points :
    Les tests de connectivité ne sont effectués que lorsque les deux sommets ont une probabilité élevée d’appartenir à la même classe  
    ($x[u,i] > 0.5$ et $x[v,i] > 0.5$), ce qui réduit considérablement le nombre de coupes inutiles.
 2. **Ajout d’inégalités croisées ("cross inequalities")** :  
-   Pour tout **4-cycle sans cordes** $(a,b,c,d)$, on impose :
+  Pour tout **4-cycle sans cordes** $(a, b, c, d)$, on impose :
 
-   $$
-   x[a,i_1] + x[c,i_1] + x[b,i_2] + x[d,i_2] \le 3, \quad \forall i_1 \ne i_2
-   $$
-   Ces contraintes évitent certaines configurations symétriques et non connexes.
+  $$
+  x[a,i_1] + x[c,i_1] + x[b,i_2] + x[d,i_2] \le 3, \quad \forall i_1 \ne i_2
+  $$
+
+  Ces contraintes permettent d’éviter des configurations symétriques et non connexes, améliorant ainsi la qualité des solutions.
 
 ### Intérêt
 Cette version est **plus robuste et plus rapide** :
