@@ -60,9 +60,10 @@ La deuxième approche repose sur un **modèle compact** avec des variables binai
   un **problème de flot maximum / min-cut** est résolu pour détecter une violation de connectivité.
 - Une **contrainte de coupe** est ajoutée pour interdire cette configuration :
   $$
-  x[u,i] + x[v,i] - \sum_{z \in S} x[z,i] \le 1
+  x[u,i] + x[v,i] - \sum_{z \in S} x[z,i] \le 1, \quad \forall S \subseteq V
   $$
-  où $S$ est l’ensemble de sommets séparant $u$ et $v$.
+  où $S$ est l’ensemble de sommets séparant $u$ et $v$ dans le graphe.
+
 
 ### Intérêt
 Cette approche est plus **scalable** que la formulation à flots, car elle ajoute dynamiquement les contraintes nécessaires à la connectivité.  
