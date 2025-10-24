@@ -48,7 +48,10 @@ Elle est intuitive mais peut devenir **lourde** pour des graphes denses à cause
 La deuxième approche repose sur un **modèle compact** avec des variables binaires $x[v,i]$ indiquant l’appartenance du sommet $v$ à la classe $i$, complété par une **procédure de séparation** pour assurer la connectivité.
 
 ### Modèle de base
-- **Variables** : $x[v,i] \in \{0,1\}$.
+
+- **Variables** :  
+  $x[v,i] \in \{0,1\}$.
+
 - **Objectif** :  
   Maximiser le poids total de la première classe $W(V_1)$, sous contrainte d’équilibre croissant :
 
@@ -61,6 +64,9 @@ La deuxième approche repose sur un **modèle compact** avec des variables binai
   $$
   \sum_{v \in V} W[v] \cdot x[v,i] \leq \sum_{v \in V} W[v] \cdot x[v,i+1}, \quad \forall i = 1, \dots, k-1.
   $$
+
+- **Contrainte d’unicité** :  
+  Chaque sommet appartient à **au plus une classe**.
 
 - **Contrainte d’unicité** : chaque sommet appartient à **au plus une classe**.
 
