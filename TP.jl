@@ -474,6 +474,7 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
         end
         sort!(classes[i])
     end
+    metrics = merge(metrics, (time=time() - start_time,))
     return (metrics, classes)
 end
 
@@ -582,9 +583,176 @@ function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::
         end
         sort!(classes[i])
     end
+    metrics = merge(metrics, (time=time() - start_time,))
     return (metrics, classes)
 end
 
+# =================== METHODE 4 - ASYETRIQUE FLOWS ==================#
+
+function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=nothing)
+
+    n  = length(W)
+    @assert size(E,1) == n && size(E,2) == n "E doit être n×n"
+    wG = sum(W)
+
+    # ----- ordre total des sommets (pour (17) de F'_k) -----
+    ord = isnothing(order) ? collect(1:n) : copy(order)
+    @assert length(ord) == n && sort(ord) == collect(1:n) "order doit être une permutation de 1:n"
+    pos = zeros(Int, n)              # pos[v] = rang de v dans l’ordre (1 = plus petit)
+    for (p,v) in enumerate(ord); pos[v] = p; end
+
+    # ----- construction du digraphe D : V ∪ {s}, arcs (u,v) & (v,u) pour {u,v}∈E + arcs (s,v) -----
+    s = n + 1
+    vertices = collect(1:n)          # sommets réels
+    arcs = Tuple{Int,Int}[]
+
+    # arcs bidirectionnels du graphe
+    for u in 1:n, v in 1:n
+        if u != v && E[u,v] == 1
+            push!(arcs, (u,v))
+        end
+    end
+    # arcs de la source
+    for v in 1:n
+        push!(arcs, (s,v))
+    end
+
+    A = length(arcs)
+    arcs_out = [Int[] for _ in 1:(n+1)]  # 1..n = sommets, n+1 = source
+    arcs_in  = [Int[] for _ in 1:(n+1)]
+    for a in 1:A
+        (u,v) = arcs[a]
+        push!(arcs_out[u], a)
+        push!(arcs_in[v],  a)
+    end
+
+    # ----- modèle -----
+    model = Model(() -> Gurobi.Optimizer())
+    # utilise les mêmes paramètres globaux si tu les as déjà définis
+    try
+        set_optimizer_attribute(model, "OutputFlag", 0)
+    catch; end
+    try
+        set_optimizer_attribute(model, "TimeLimit", time_limit)
+    catch; end
+    try
+        set_optimizer_attribute(model, "MIPGap",    gap_limit)
+    catch; end
+
+    # Variables (21)–(22)
+    @variable(model, y[1:A, 1:k], Bin)     # y[a,i] = 1 si l’arc a est choisi pour le type i
+    @variable(model, f[1:A, 1:k] >= 0.0)   # f[a,i] = flux type i sur l’arc a
+
+    # Objectif : max sum_{v} w(v) * y(δ^-(v), 1)   (classe 1 = la plus légère)  (cf. (14))
+    @objective(model, Max, sum(W[v] * sum(y[a,1] for a in arcs_in[v]) for v in vertices))  # (14) & objectif
+
+    # (14) ordre non décroissant des poids de classes via entrées choisies
+    for i in 1:k-1
+        @constraint(model, sum(W[v] * sum(y[a,i]   for a in arcs_in[v]) for v in vertices) <=
+                           sum(W[v] * sum(y[a,i+1] for a in arcs_in[v]) for v in vertices))
+    end
+
+    # (15) au plus un arc sortant de s pour chaque type i (choix d'une racine r_i)
+    for i in 1:k
+        @constraint(model, sum(y[a,i] for a in arcs_out[s]) <= 1)
+    end
+
+    # (16) chaque sommet réel reçoit au plus un arc entrant au total (appartenance à ≤ 1 classe)
+    for v in vertices
+        @constraint(model, sum(sum(y[a,i] for a in arcs_in[v]) for i in 1:k) <= 1)
+    end
+
+    # (17) casse-symétrie par ordre total : si (s->v) est racine de la classe i,
+    # alors aucun sommet u strictement plus petit que v ne peut appartenir à la classe i.
+    # i.e. y[(s,v),i] + y(δ^-(u), i) <= 1 pour tout u avec pos[u] < pos[v]
+    # (implé conforme au texte : “the root is the smallest vertex of its arborescence”) :contentReference[oaicite:1]{index=1}
+    s_arc_index = Dict{Tuple{Int,Int},Int}()
+    for a in 1:A
+        if arcs[a][1] == s
+            s_arc_index[arcs[a]] = a  # (s,v) -> index
+        end
+    end
+    for i in 1:k, v in vertices, u in vertices
+        if pos[u] < pos[v]
+            a_sv = s_arc_index[(s,v)]
+            @constraint(model, y[a_sv,i] + sum(y[a,i] for a in arcs_in[u]) <= 1)
+        end
+    end
+
+    # (18) couplage flux/activation (borne sûre = n)
+    for i in 1:k, a in 1:A
+        @constraint(model, f[a,i] <= n * y[a,i])
+    end
+
+    # (19) flux non croissant au sommet : f(δ^+(v),i) <= f(δ^-(v),i)
+    for i in 1:k, v in vertices
+        @constraint(model, sum(f[a,i] for a in arcs_out[v]) <= sum(f[a,i] for a in arcs_in[v]))
+    end
+
+    # (20) chaque sommet consomme 1 unité au total (somme sur les types)
+    for v in vertices
+        @constraint(model, sum(sum(f[a,i] for a in arcs_in[v]) for i in 1:k) -
+                               sum(sum(f[a,i] for a in arcs_out[v]) for i in 1:k) == 1)
+    end
+
+    optimize!(model)
+    metrics = collect_metrics(model)
+    if !has_values(model)
+        return (metrics, [Int[] for _ in 1:k])
+    end
+
+    yval = value.(y)
+
+    # ----- reconstruction des classes : pour chaque i, racine r_i = v avec y[(s->v),i] ~ 1,
+    # puis on suit les arcs entre sommets (u->v) avec y > 0.5 pour bâtir l’arborescence.
+    classes = [Int[] for _ in 1:k]
+    # indexer arcs (u->v) entre sommets
+    out_arcs_between = [Int[] for _ in 1:n]
+    for a in 1:A
+        (u,v) = arcs[a]
+        if u != s && v != s
+            push!(out_arcs_between[u], a)
+        end
+    end
+
+    # récupère l’index de l’arc (s->v)
+    get_s_arc = v -> s_arc_index[(s,v)]
+
+    for i in 1:k
+        # racine éventuelle
+        r = 0
+        for v in vertices
+            if yval[get_s_arc(v), i] > 0.5
+                r = v; break
+            end
+        end
+        if r == 0
+            # classe vide
+            continue
+        end
+        # parcours depuis r
+        stack = [r]
+        seen  = falses(n)
+        seen[r] = true
+        push!(classes[i], r)
+        while !isempty(stack)
+            u = pop!(stack)
+            for a in out_arcs_between[u]
+                if yval[a, i] > 0.5
+                    v = arcs[a][2]
+                    if !seen[v]
+                        seen[v] = true
+                        push!(classes[i], v)
+                        push!(stack, v)
+                    end
+                end
+            end
+        end
+        sort!(classes[i])
+    end
+
+    return (metrics, classes)
+end
 # =================== FONCTIONS D'AFFICHAGE/TRACE ==================#
 function plot_partition(E, classes; node_colors = [:red, :blue, :green, :orange, :purple])
     n = size(E,1)
@@ -618,7 +786,8 @@ function check_connectivity(E, classes)
 end
 
 # ================= LANCEMENT DES TESTS =================#
-const FNAME = "/Users/p.gatt/Documents/3A/Optimisation_discrete/random/rnd_n20/m30/a/rnd_20_30_a_1.in"
+
+const FNAME = "C:/Users/Charlène/Documents/ENSTA/3A/Opt discrète/Projet/Instances/random/rnd_n50/m70/a/rnd_50_70_a_1.in"
 E, W = readWeightedGraph_paper(FNAME)
 k = 2
 
@@ -634,7 +803,12 @@ println("\n=== Méthode 3 : CUTS + séparation BOOSTÉE (Q3) ===")
 metricsCB, classesCB = solve_bcpk_coupes_separation_boost(E, W, k)
 print_solution_with_metrics("CUTS BOOSTÉE (Q3)", metricsCB, classesCB, W)
 
+println("\n=== Méthode 4 : ASYM FLOW ===")
+metricsAF, classesAF = solve_bcpk_asym_flow(E, W, k)
+print_solution_with_metrics("ASYM FLOW (Q3)", metricsAF, classesAF, W)
+
 # PLOTS ET TESTS
 check_connectivity(E, classesF)
 plot_partition(E, classesF)
+
 
