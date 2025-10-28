@@ -1,5 +1,9 @@
 # ================CONFIGURATION GUROBI================#
-# Déclare le chemin local vers Gurobi et sa licence.
+
+#ENV["GUROBI_HOME"] = "/Library/gurobi1203/macos_universal2/"
+#ENV["GRB_LICENSE_FILE"] = "/Users/p.gatt/Documents/3A/Optimisation_discrete/gurobi.lic"
+
+
 ENV["GUROBI_HOME"] = "/Library/gurobi1203/macos_universal2/"
 ENV["GRB_LICENSE_FILE"] = "/Users/p.gatt/Documents/3A/Optimisation_discrete/gurobi.lic"
 
@@ -27,14 +31,6 @@ const max_rounds = 50
 const tol        = 1e-6         # tolérance pour les coupes
 
 #================FONCTION LECTURE DATA ================#
-"""
-readWeightedGraph_paper(file) -> (E, W)
-
-Lit une instance au format LOCO-UNICAMP.
-Retourne :
-- E : matrice d’adjacence (Int, n×n) non orientée (symétrisée)
-- W : vecteur poids sommets (Int, n)
-"""
 function readWeightedGraph_paper(file::String)
     open(file, "r") do io
         data = readlines(io)
@@ -67,7 +63,7 @@ collect_metrics(model) -> NamedTuple
 Renvoie :
 - obj, bound, time, status, gap, optimal
 """
-function collect_metrics(model::JuMP.Model)
+function collect_metrics(model::JuMP.Model; time_total::Union{Nothing,Float64}=nothing)
     status = termination_status(model)
 
     obj = try
@@ -94,8 +90,14 @@ function collect_metrics(model::JuMP.Model)
         NaN
     end
 
-    return (obj=obj, bound=bound, time=tsolve, status=status, gap=gap, optimal=(status == MOI.OPTIMAL))
+    return (obj=obj,
+            bound=bound,
+            time=(time_total === nothing ? tsolve : time_total),
+            status=status,
+            gap=gap,
+            optimal=(status == MOI.OPTIMAL))
 end
+
 
 function print_solution_with_metrics(title::String, metrics, classes::Vector{Vector{Int}}, W::Vector{Int})
     println("=== $(title) ===")
@@ -155,23 +157,18 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
     s1 = sources[1]
     @objective(model, Max, sum(f[a] for a in arcs_out[s1]))
 
-    # ordre non décroissant des flux par source
     for i in 1:k-1
         si, sip1 = sources[i], sources[i+1]
         @constraint(model, sum(f[a] for a in arcs_out[si]) <= sum(f[a] for a in arcs_out[sip1]))
     end
 
-    # conservation + consommation W[v] aux sommets réels
     for v in 1:n
         @constraint(model, sum(f[a] for a in arcs_in[v]) - sum(f[a] for a in arcs_out[v]) == W[v])
     end
 
-    # activation par y
     for a in 1:A
         @constraint(model, f[a] <= wG * y[a])
     end
-
-    # une sortie par source + au plus un père par sommet réel
     for si in sources
         @constraint(model, sum(y[a] for a in arcs_out[si]) <= 1)
     end
@@ -179,16 +176,17 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
         @constraint(model, sum(y[a] for a in arcs_in[v]) <= 1)
     end
 
+    start_time = time()
     optimize!(model)
-    metrics = collect_metrics(model)
 
     if !has_values(model)
+        total_time = time() - start_time
+        metrics = collect_metrics(model; time_total = total_time)
         return (metrics, [Int[] for _ in 1:k])
     end
 
     yval = value.(y)
 
-    # reconstruire la forêt et les classes
     parent = fill(0, n)
     for v in 1:n
         for a in arcs_in[v]
@@ -214,8 +212,12 @@ function solve_bcpk_flow(E::Array{Int,2}, W::Vector{Int}, k::Int)
         end
         sort!(classes[i])
     end
+
+    total_time = time() - start_time
+    metrics = collect_metrics(model; time_total = total_time)
     return (metrics, classes)
 end
+
 
 # ================OUTIL : MIN-CUT (Dinic)================#
 """
@@ -425,7 +427,6 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
                 push!(origins, v); push!(dests, v+n); push!(caps, float(x_sol[v,i]))
             end
             for (u,v) in non_edges
-                # SANS BOOST : condition sur la somme
                 if x_sol[u,i] + x_sol[v,i] > 1.0 + tol
                     s = u; t = v + n
                     nb = 2*n
@@ -453,16 +454,17 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
     while (round < max_rounds) && ((time() - start_time) < time_limit)
         optimize!(model)
         has_values(model) || break
-        x_sol = value.(x)
+        x_sol = value.(x)                      
         added = add_violated_cuts!(x_sol)
         round += 1
         added == 0 && break
     end
 
     optimize!(model)
-    metrics = collect_metrics(model)
 
     if !has_values(model)
+        total_time = time() - start_time
+        metrics = collect_metrics(model; time_total = total_time)
         return (metrics, [Int[] for _ in 1:k])
     end
 
@@ -474,9 +476,12 @@ function solve_bcpk_coupes_separation(E::Array{Int,2}, W::Vector{Int}, k::Int)
         end
         sort!(classes[i])
     end
-    metrics = merge(metrics, (time=time() - start_time,))
+
+    total_time = time() - start_time
+    metrics = collect_metrics(model; time_total = total_time)
     return (metrics, classes)
 end
+
 
 # ================METHODE 3 : CUTS (Q3, avec boost + cross)================#
 """
@@ -569,9 +574,9 @@ function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::
     end
 
     optimize!(model)
-    metrics = collect_metrics(model)
-
     if !has_values(model)
+        total_time = time() - start_time
+        metrics = collect_metrics(model; time_total = total_time)
         return (metrics, [Int[] for _ in 1:k])
     end
 
@@ -583,14 +588,15 @@ function solve_bcpk_coupes_separation_boost(E::Array{Int,2}, W::Vector{Int}, k::
         end
         sort!(classes[i])
     end
-    metrics = merge(metrics, (time=time() - start_time,))
+
+    total_time = time() - start_time
+    metrics = collect_metrics(model; time_total = total_time)
     return (metrics, classes)
 end
 
 # =================== METHODE 4 - ASYETRIQUE FLOWS ==================#
 
 function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=nothing)
-
     n  = length(W)
     @assert size(E,1) == n && size(E,2) == n "E doit être n×n"
     wG = sum(W)
@@ -598,27 +604,23 @@ function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=not
     # ----- ordre total des sommets (pour (17) de F'_k) -----
     ord = isnothing(order) ? collect(1:n) : copy(order)
     @assert length(ord) == n && sort(ord) == collect(1:n) "order doit être une permutation de 1:n"
-    pos = zeros(Int, n)              # pos[v] = rang de v dans l’ordre (1 = plus petit)
+    pos = zeros(Int, n)
     for (p,v) in enumerate(ord); pos[v] = p; end
 
-    # ----- construction du digraphe D : V ∪ {s}, arcs (u,v) & (v,u) pour {u,v}∈E + arcs (s,v) -----
+    # ----- construction du digraphe D : V ∪ {s}, arcs (u,v) & (v,u) + arcs (s,v) -----
     s = n + 1
-    vertices = collect(1:n)          # sommets réels
+    vertices = collect(1:n)
     arcs = Tuple{Int,Int}[]
-
-    # arcs bidirectionnels du graphe
     for u in 1:n, v in 1:n
         if u != v && E[u,v] == 1
             push!(arcs, (u,v))
         end
     end
-    # arcs de la source
     for v in 1:n
         push!(arcs, (s,v))
     end
-
     A = length(arcs)
-    arcs_out = [Int[] for _ in 1:(n+1)]  # 1..n = sommets, n+1 = source
+    arcs_out = [Int[] for _ in 1:(n+1)]
     arcs_in  = [Int[] for _ in 1:(n+1)]
     for a in 1:A
         (u,v) = arcs[a]
@@ -628,44 +630,33 @@ function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=not
 
     # ----- modèle -----
     model = Model(() -> Gurobi.Optimizer())
-    # utilise les mêmes paramètres globaux si tu les as déjà définis
-    try
-        set_optimizer_attribute(model, "OutputFlag", 0)
-    catch; end
-    try
-        set_optimizer_attribute(model, "TimeLimit", time_limit)
-    catch; end
-    try
-        set_optimizer_attribute(model, "MIPGap",    gap_limit)
-    catch; end
+    set_optimizer_attribute(model, "OutputFlag", 0)
+    set_optimizer_attribute(model, "TimeLimit", time_limit)
+    set_optimizer_attribute(model, "MIPGap",    gap_limit)
 
-    # Variables (21)–(22)
-    @variable(model, y[1:A, 1:k], Bin)     # y[a,i] = 1 si l’arc a est choisi pour le type i
-    @variable(model, f[1:A, 1:k] >= 0.0)   # f[a,i] = flux type i sur l’arc a
+    @variable(model, y[1:A, 1:k], Bin)
+    @variable(model, f[1:A, 1:k] >= 0.0)
 
-    # Objectif : max sum_{v} w(v) * y(δ^-(v), 1)   (classe 1 = la plus légère)  (cf. (14))
-    @objective(model, Max, sum(W[v] * sum(y[a,1] for a in arcs_in[v]) for v in vertices))  # (14) & objectif
+    # Objectif : max sum_v w(v) * y(δ^-(v), 1)
+    @objective(model, Max, sum(W[v] * sum(y[a,1] for a in arcs_in[v]) for v in vertices))
 
-    # (14) ordre non décroissant des poids de classes via entrées choisies
+    # (ordre non décroissant des poids de classes)
     for i in 1:k-1
         @constraint(model, sum(W[v] * sum(y[a,i]   for a in arcs_in[v]) for v in vertices) <=
                            sum(W[v] * sum(y[a,i+1] for a in arcs_in[v]) for v in vertices))
     end
 
-    # (15) au plus un arc sortant de s pour chaque type i (choix d'une racine r_i)
+    # (au plus un arc sortant de s par classe)
     for i in 1:k
         @constraint(model, sum(y[a,i] for a in arcs_out[s]) <= 1)
     end
 
-    # (16) chaque sommet réel reçoit au plus un arc entrant au total (appartenance à ≤ 1 classe)
+    # (appartenance à ≤ 1 classe)
     for v in vertices
         @constraint(model, sum(sum(y[a,i] for a in arcs_in[v]) for i in 1:k) <= 1)
     end
 
-    # (17) casse-symétrie par ordre total : si (s->v) est racine de la classe i,
-    # alors aucun sommet u strictement plus petit que v ne peut appartenir à la classe i.
-    # i.e. y[(s,v),i] + y(δ^-(u), i) <= 1 pour tout u avec pos[u] < pos[v]
-    # (implé conforme au texte : “the root is the smallest vertex of its arborescence”) :contentReference[oaicite:1]{index=1}
+    # (casse-symétrie : racine = plus petit sommet de la classe)
     s_arc_index = Dict{Tuple{Int,Int},Int}()
     for a in 1:A
         if arcs[a][1] == s
@@ -679,34 +670,34 @@ function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=not
         end
     end
 
-    # (18) couplage flux/activation (borne sûre = n)
+    # (couplage flux/activation)
     for i in 1:k, a in 1:A
         @constraint(model, f[a,i] <= n * y[a,i])
     end
-
-    # (19) flux non croissant au sommet : f(δ^+(v),i) <= f(δ^-(v),i)
+    # (flux non croissant au sommet)
     for i in 1:k, v in vertices
         @constraint(model, sum(f[a,i] for a in arcs_out[v]) <= sum(f[a,i] for a in arcs_in[v]))
     end
-
-    # (20) chaque sommet consomme 1 unité au total (somme sur les types)
+    # (chaque sommet consomme 1 unité au total)
     for v in vertices
         @constraint(model, sum(sum(f[a,i] for a in arcs_in[v]) for i in 1:k) -
                                sum(sum(f[a,i] for a in arcs_out[v]) for i in 1:k) == 1)
     end
 
+    # ======= timing & solve =======
+    start_time = time()
     optimize!(model)
-    metrics = collect_metrics(model)
+
     if !has_values(model)
+        total_time = time() - start_time
+        metrics = collect_metrics(model; time_total = total_time)
         return (metrics, [Int[] for _ in 1:k])
     end
 
+    # ======= reconstruction des classes =======
     yval = value.(y)
 
-    # ----- reconstruction des classes : pour chaque i, racine r_i = v avec y[(s->v),i] ~ 1,
-    # puis on suit les arcs entre sommets (u->v) avec y > 0.5 pour bâtir l’arborescence.
     classes = [Int[] for _ in 1:k]
-    # indexer arcs (u->v) entre sommets
     out_arcs_between = [Int[] for _ in 1:n]
     for a in 1:A
         (u,v) = arcs[a]
@@ -714,26 +705,18 @@ function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=not
             push!(out_arcs_between[u], a)
         end
     end
-
-    # récupère l’index de l’arc (s->v)
     get_s_arc = v -> s_arc_index[(s,v)]
 
     for i in 1:k
-        # racine éventuelle
         r = 0
         for v in vertices
             if yval[get_s_arc(v), i] > 0.5
                 r = v; break
             end
         end
-        if r == 0
-            # classe vide
-            continue
-        end
-        # parcours depuis r
+        r == 0 && continue
         stack = [r]
-        seen  = falses(n)
-        seen[r] = true
+        seen  = falses(n); seen[r] = true
         push!(classes[i], r)
         while !isempty(stack)
             u = pop!(stack)
@@ -751,8 +734,11 @@ function solve_bcpk_asym_flow(E::Array{Int,2}, W::Vector{Int}, k::Int; order=not
         sort!(classes[i])
     end
 
+    total_time = time() - start_time
+    metrics = collect_metrics(model; time_total = total_time)
     return (metrics, classes)
 end
+
 # =================== FONCTIONS D'AFFICHAGE/TRACE ==================#
 function plot_partition(E, classes; node_colors = [:red, :blue, :green, :orange, :purple])
     n = size(E,1)
@@ -787,7 +773,9 @@ end
 
 # ================= LANCEMENT DES TESTS =================#
 
-const FNAME = "C:/Users/Charlène/Documents/ENSTA/3A/Opt discrète/Projet/Instances/random/rnd_n50/m70/a/rnd_50_70_a_1.in"
+#const FNAME = "C:/Users/Charlène/Documents/ENSTA/3A/Opt discrète/Projet/Instances/random/rnd_n50/m70/a/rnd_50_70_a_1.in"
+
+const FNAME = "/Users/p.gatt/Documents/3A/Optimisation_discrete/random/rnd_n20/m30/a/rnd_20_30_a_1.in"
 E, W = readWeightedGraph_paper(FNAME)
 k = 2
 
