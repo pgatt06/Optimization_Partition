@@ -268,7 +268,7 @@ function mincut_two_layer(nb_nodes::Int,
             itcur[v] = k
             idx = adj[v][k]
             u   = to[idx]
-            if cap[idx] > 1e-12 && level[v] < level[u]
+            if cap[idx] > 1e-12 && level[u] == level[v] + 1
                 δ = dfs!(u, min(fmax, cap[idx]))
                 if δ > 1e-12
                     cap[idx]      -= δ
